@@ -144,11 +144,49 @@ if players is not None and rankings is not None:
         st.info("No valid ranking data available to plot.")
 
     # ------------------------------
-    #  CHECK POSITION FOR A PLAYER
+    #  DRAW STRUCTURE + POSITION CHECKER
     # ------------------------------
     st.markdown("---")
     st.subheader("Check position of a player in this tournament")
 
+    # Selection basis
+    selection_basis = st.radio(
+        "Tournament selection is based on:",
+        ["WTN (with ranking as tie-break)", "Ranking only"],
+    )
+
+    # Draw structure inputs
+    st.markdown("**Draw structure**")
+    dc1, dc2, dc3 = st.columns(3)
+    with dc1:
+        main_draw_size = st.number_input(
+            "Main draw size", min_value=1, value=32, step=1
+        )
+    with dc2:
+        qual_draw_size = st.number_input(
+            "Qualifying draw size (0 if none)", min_value=0, value=0, step=1
+        )
+    with dc3:
+        qualifiers_to_main = st.number_input(
+            "Qualifiers into main draw", min_value=0, value=0, step=1
+        )
+
+    dc4, dc5 = st.columns(2)
+    with dc4:
+        wildcards_main = st.number_input(
+            "Wildcards in main draw", min_value=0, value=0, step=1
+        )
+    with dc5:
+        wildcards_qual = st.number_input(
+            "Wildcards in qualifying draw", min_value=0, value=0, step=1
+        )
+
+    st.caption(
+        "Example: 24Q / 32M with 8 qualifiers → main draw size 32, qualifying draw size 24, "
+        "qualifiers into main 8."
+    )
+
+    # Player inputs
     col1, col2 = st.columns(2)
     with col1:
         first_name = st.text_input("First name", "")
@@ -161,32 +199,97 @@ if players is not None and rankings is not None:
     with col4:
         rank_input = st.text_input("Player's LTA Combined Ranking (optional)", "")
 
+    # Helper to classify position vs draw
+    def classify_position(position: int | None):
+        if position is None:
+            return "No valid position calculated."
+
+        # effective spots
+        direct_main = max(
+            0, int(main_draw_size) - int(wildcards_main) - int(qualifiers_to_main)
+        )
+        direct_qual = max(0, int(qual_draw_size) - int(wildcards_qual))
+
+        # Clamp if user puts silly numbers
+        total_spots = direct_main + direct_qual
+
+        if total_spots == 0:
+            return "No available draw spots configured (check draw sizes and wildcards)."
+
+        if position <= direct_main:
+            return (
+                f"✅ **Directly in main draw** (position {position} within main-draw acceptances; "
+                f"{direct_main} direct main spots)."
+            )
+        elif qual_draw_size > 0 and position <= direct_main + direct_qual:
+            qual_position = position - direct_main
+            return (
+                f"✅ **In qualifying draw** (position {qual_position} within qualifying; "
+                f"{direct_qual} qualifying spots)."
+            )
+        else:
+            if qual_draw_size > 0:
+                return (
+                    f"⚠️ **Outside draw** – on alternates list. "
+                    f"Position {position} but only {total_spots} total spots "
+                    f"({direct_main} main + {direct_qual} qualifying)."
+                )
+            else:
+                return (
+                    f"⚠️ **Outside main draw** – on alternates list. "
+                    f"Position {position} but only {direct_main} main-draw spots."
+                )
+
+    # Main button logic
     if st.button("Calculate position"):
         full_name = (first_name + " " + surname).strip()
         st.write(f"**Player:** {full_name or '(no name entered)'}")
+
+        position_wtn = None
+        position_rank = None
 
         # --- By WTN ---
         if wtn_input.strip() != "" and "WTN_num" in merged.columns:
             try:
                 player_wtn = float(wtn_input)
                 valid_wtn = merged[merged["WTN_num"].notna()].copy()
-                # lower WTN is stronger
-                valid_wtn = valid_wtn.sort_values("WTN_num", ascending=True)
 
-                num_stronger = (valid_wtn["WTN_num"] < player_wtn).sum()
-                position_wtn = int(num_stronger) + 1
+                # If ranking available, use for tie-break
+                if rank_input.strip() != "" and "Rank_num" in merged.columns:
+                    try:
+                        player_rank_val = int(rank_input)
+                    except ValueError:
+                        player_rank_val = None
+                else:
+                    player_rank_val = None
+
+                # players with strictly better WTN
+                better = valid_wtn[valid_wtn["WTN_num"] < player_wtn]
+
+                # same WTN but better ranking (only if we know player's ranking)
+                if player_rank_val is not None and "Rank_num" in valid_wtn.columns:
+                    better_ties = valid_wtn[
+                        (valid_wtn["WTN_num"] == player_wtn)
+                        & (valid_wtn["Rank_num"].notna())
+                        & (valid_wtn["Rank_num"] < player_rank_val)
+                    ]
+                    better = pd.concat([better, better_ties])
+
+                position_wtn = int(len(better)) + 1
                 total_with_wtn = len(valid_wtn)
 
                 st.write(
                     f"- **WTN basis**: position **{position_wtn}** out of {total_with_wtn} players "
                     f"with a WTN Singles value."
                 )
+
+                num_stronger = len(better)
                 st.write(
-                    f"  → {num_stronger} players have a **better (lower)** WTN; "
+                    f"  → {num_stronger} players have a **better (lower)** WTN (and tie-break if used); "
                     f"{total_with_wtn - position_wtn} have a **worse (higher)** WTN."
                 )
 
-                # Add a WTN chart with the player's position marked
+                # WTN distribution with player marker
                 wtn_data = valid_wtn[["Name", "WTN_num"]]
                 base = (
                     alt.Chart(wtn_data)
@@ -261,6 +364,30 @@ if players is not None and rankings is not None:
 
         elif rank_input.strip() != "":
             st.warning("No 'Rank' column found in the rankings data.")
+
+        # ------------------------------
+        #  ENTRY CHANCE SUMMARY
+        # ------------------------------
+        st.markdown("### Entry chance summary")
+
+        if selection_basis.startswith("WTN"):
+            summary = classify_position(position_wtn)
+            if position_wtn is None:
+                st.warning(
+                    "Selection basis is WTN, but I couldn't calculate a WTN-based position. "
+                    "Check that you entered a valid WTN and that the rankings file contains WTN Singles."
+                )
+            else:
+                st.write(summary)
+        else:  # Ranking only
+            summary = classify_position(position_rank)
+            if position_rank is None:
+                st.warning(
+                    "Selection basis is Ranking, but I couldn't calculate a ranking-based position. "
+                    "Check that you entered a valid ranking and that the rankings file contains Rank."
+                )
+            else:
+                st.write(summary)
 
     # Download button for full result
     csv_data = result.to_csv(index=False).encode("utf-8")
