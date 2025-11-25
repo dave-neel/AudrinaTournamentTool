@@ -1,8 +1,5 @@
 import streamlit as st
 import pandas as pd
-import threading
-import time
-import os
 
 st.title("Tournament vs LTA Rankings matcher")
 
@@ -178,19 +175,3 @@ if players is not None and rankings is not None:
         file_name="tournament_with_rankings.csv",
         mime="text/csv",
     )
-
-# ------------------------------
-#  FINISH & CLOSE APP BUTTON
-# ------------------------------
-st.markdown("---")
-st.subheader("Finished using the app?")
-
-def shutdown_later():
-    # small delay so the message can render
-    time.sleep(1)
-    os._exit(0)
-
-if st.button("Finished – close app"):
-    st.success("App is shutting down. You can now close this browser tab.")
-    # run shutdown in a background thread so the message appears first
-    threading.Thread(target=shutdown_later).start()
