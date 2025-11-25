@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 st.title("Tournament vs LTA Rankings matcher")
 
@@ -44,7 +45,7 @@ if players is not None and rankings is not None:
     # Flag whether each tournament player was found in rankings
     merged["Found_in_rankings"] = ~merged["Player"].isna()
 
-    # Make numeric versions for sorting / calculations
+    # Numeric versions for sorting / calculations
     if "Rank" in merged.columns:
         merged["Rank_num"] = pd.to_numeric(merged["Rank"], errors="coerce")
 
@@ -95,6 +96,54 @@ if players is not None and rankings is not None:
         st.write("All tournament players were found in rankings.csv ✅")
 
     # ------------------------------
+    #  RANKING / WTN VISUALISATIONS
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("Visualise tournament strength")
+
+    # WTN distribution chart
+    if "WTN_num" in merged.columns and merged["WTN_num"].notna().any():
+        st.write("**WTN Singles distribution (lower is stronger)**")
+        wtn_data = merged[merged["WTN_num"].notna()][["Name", "WTN_num"]]
+
+        wtn_hist = (
+            alt.Chart(wtn_data)
+            .mark_bar()
+            .encode(
+                x=alt.X("WTN_num:Q", bin=alt.Bin(maxbins=20), title="WTN Singles"),
+                y=alt.Y("count():Q", title="Number of players"),
+            )
+            .properties(height=250)
+        )
+
+        st.altair_chart(wtn_hist, use_container_width=True)
+    else:
+        st.info("No valid WTN Singles data available to plot.")
+
+    # Ranking distribution chart
+    if "Rank_num" in merged.columns and merged["Rank_num"].notna().any():
+        st.write("**LTA Combined Ranking (smaller number is stronger)**")
+        rank_data = merged[merged["Rank_num"].notna()][["Name", "Rank_num"]]
+
+        rank_chart = (
+            alt.Chart(rank_data)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    "Rank_num:Q",
+                    bin=alt.Bin(maxbins=25),
+                    title="LTA Combined Ranking",
+                ),
+                y=alt.Y("count():Q", title="Number of players"),
+            )
+            .properties(height=250)
+        )
+
+        st.altair_chart(rank_chart, use_container_width=True)
+    else:
+        st.info("No valid ranking data available to plot.")
+
+    # ------------------------------
     #  CHECK POSITION FOR A PLAYER
     # ------------------------------
     st.markdown("---")
@@ -136,6 +185,29 @@ if players is not None and rankings is not None:
                     f"  → {num_stronger} players have a **better (lower)** WTN; "
                     f"{total_with_wtn - position_wtn} have a **worse (higher)** WTN."
                 )
+
+                # Add a WTN chart with the player's position marked
+                wtn_data = valid_wtn[["Name", "WTN_num"]]
+                base = (
+                    alt.Chart(wtn_data)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "WTN_num:Q",
+                            bin=alt.Bin(maxbins=20),
+                            title="WTN Singles",
+                        ),
+                        y=alt.Y("count():Q", title="Number of players"),
+                    )
+                    .properties(title="WTN Singles distribution with player highlighted")
+                )
+                marker = (
+                    alt.Chart(pd.DataFrame({"WTN_num": [player_wtn]}))
+                    .mark_rule(color="red", strokeWidth=2)
+                    .encode(x="WTN_num:Q")
+                )
+                st.altair_chart(base + marker, use_container_width=True)
+
             except ValueError:
                 st.error("WTN entered is not a valid number.")
 
@@ -161,6 +233,29 @@ if players is not None and rankings is not None:
                     f"  → {num_better_rank} players are **ranked higher** (better number); "
                     f"{total_with_rank - position_rank} are **ranked lower**."
                 )
+
+                # Ranking chart with player's rank marked
+                rank_data = valid_rank[["Name", "Rank_num"]]
+                base_rank = (
+                    alt.Chart(rank_data)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "Rank_num:Q",
+                            bin=alt.Bin(maxbins=25),
+                            title="LTA Combined Ranking",
+                        ),
+                        y=alt.Y("count():Q", title="Number of players"),
+                    )
+                    .properties(title="Ranking distribution with player highlighted")
+                )
+                marker_rank = (
+                    alt.Chart(pd.DataFrame({"Rank_num": [player_rank]}))
+                    .mark_rule(color="red", strokeWidth=2)
+                    .encode(x="Rank_num:Q")
+                )
+                st.altair_chart(base_rank + marker_rank, use_container_width=True)
+
             except ValueError:
                 st.error("Ranking entered is not a valid whole number.")
 
