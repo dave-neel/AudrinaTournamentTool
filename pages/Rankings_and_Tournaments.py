@@ -9,45 +9,93 @@ from io import StringIO
 
 def parse_players_from_text(raw: str) -> pd.DataFrame:
     """
-    Parse pasted text of 'Player [tab or spaces] Date of entry' into a clean Name list.
-    Works for lines like:
-    - 'Audrina Neeladoo\\tTue 11/11/2025 12:30'
-    - 'Audrina Neeladoo   Tue 11/11/2025 12:30'
+    Parse pasted text into a clean Name list.
+
+    Handles formats like:
+    - Header: 'Players        Date of entry'
+      Data:   'Olivia Adamska\\tTue 11/11/2025 12:30'
+    - Header row with 'Player' column:
+      'Player\\tStatus\\tSeed'
+      'Maindraw 1\\tCiara Moore\\t'
     """
     if not raw:
         return pd.DataFrame(columns=["Name"])
 
+    # Basic cleaned lines (keep order, drop empty)
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    names = []
+    if not lines:
+        return pd.DataFrame(columns=["Name"])
 
-    for ln in lines:
+    header_idx = None
+    player_col_index = None
+
+    # First pass: try to find a header line that contains 'player'
+    for idx, ln in enumerate(lines):
         lower = ln.lower()
+        if "player" in lower:  # matches 'Player', 'Players', etc.
+            header_idx = idx
 
-        # Skip header lines
-        if "player" in lower and "date" in lower:
+            # Decide how to split the header row
+            if "\t" in ln:
+                cols = [c.strip() for c in ln.split("\t") if c.strip()]
+            else:
+                cols = [c.strip() for c in ln.split() if c.strip()]
+
+            for col_i, col in enumerate(cols):
+                if "player" in col.lower():
+                    player_col_index = col_i
+                    break
+
+            break  # stop after first header line
+
+    names: list[str] = []
+
+    # Second pass: extract names from data lines
+    for idx, ln in enumerate(lines):
+        # Skip the header line if we identified it
+        if header_idx is not None and idx == header_idx:
+            continue
+
+        lower = ln.lower()
+        if not ln:
             continue
 
         name = ""
 
-        # Case 1: tab-separated
-        if "\t" in ln:
-            name = ln.split("\t", 1)[0].strip()
-        else:
-            # Case 2: space-separated: take words before first token containing a digit
-            parts = ln.split()
-            name_tokens = []
-            for tok in parts:
-                if any(ch.isdigit() for ch in tok):
-                    break
-                name_tokens.append(tok)
-            if name_tokens:
-                name = " ".join(name_tokens).strip()
+        # Mode 1: Structured "Player" column detected
+        if player_col_index is not None:
+            if "\t" in ln:
+                raw_parts = ln.split("\t")
             else:
-                name = ln.strip()
+                raw_parts = ln.split()
+
+            parts = [p.strip() for p in raw_parts if p.strip()]
+            if len(parts) > player_col_index:
+                name = parts[player_col_index].strip()
+
+        # Mode 2: Fallback – previous heuristic logic
+        if not name:
+            # Case: tab-separated -> take text before first tab
+            if "\t" in ln:
+                name = ln.split("\t", 1)[0].strip()
+            else:
+                # Space-separated: take tokens before the first token containing a digit
+                parts = ln.split()
+                name_tokens = []
+                for tok in parts:
+                    if any(ch.isdigit() for ch in tok):
+                        break
+                    name_tokens.append(tok)
+                if name_tokens:
+                    name = " ".join(name_tokens).strip()
+                else:
+                    name = ln.strip()
 
         if not name:
             continue
-        if name.lower() in {"players", "name"}:
+
+        # Skip obvious non-name tokens
+        if name.lower() in {"players", "player", "name"}:
             continue
 
         names.append(name)
@@ -161,31 +209,28 @@ def main():
         st.subheader("Paste players list from LTA page")
 
         st.markdown(
-            "1. On your iPhone, open the LTA tournament ONLINE ENTRIES page.\n"
-            "2. Select and copy the players + date block.\n"
-            "3. Paste it into the box below.\n"
-            "4. This tool extracts **just the clean list of names**.\n"
+            "You can paste **different formats**, as long as there's a header containing "
+            "`Player` or `Players` somewhere.\n\n"
+            "- Example 1 (ONLINE ENTRIES): `Players    Date of entry`\n"
+            "- Example 2 (Draw sheet): `Player    Status    Seed`\n"
         )
 
         example_text = (
-            "Players                  Date of entry\n"
-            "Audrina Neeladoo\tTue 11/11/2025 12:30\n"
-            "Audrina Neeladoo\tSat 08/11/2025 09:25\n"
-            "Audrina Neeladoo\tSun 30/11/2025 09:55\n"
-            "Audrina Neeladoo\tTue 04/11/2025 15:02\n"
-            "Audrina Neeladoo\tThu 27/11/2025 12:35\n"
-            "Audrina Neeladoo\tTue 04/11/2025 22:29\n"
-            "Audrina Neeladoo\tFri 28/11/2025 14:16\n"
-            "Audrina Neeladoo\tThu 13/11/2025 09:48\n"
+            "Player\tStatus\tSeed\n"
+            "Maindraw 1\tCiara Moore\t\n"
+            "Maindraw 2\tSummer Yardley\t\n"
+            "Maindraw 3\tAmelie Brooks\t\n"
+            "Maindraw 4\tMarelie Raath\t\n"
+            "Maindraw 5\tEllie Blackford\t\n"
         )
 
         raw_text = st.text_area(
-            "Paste the players + date text here",
+            "Paste the players block here",
             value=example_text,
             height=220,
         )
 
-        # 🔹 New: Let you choose the file name (without .csv)
+        # Let you choose the file name (without .csv)
         default_name = "tournament_players_from_paste"
         file_name_input = st.text_input(
             "File name for CSV (without .csv)",
