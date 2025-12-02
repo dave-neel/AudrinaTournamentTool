@@ -11,7 +11,7 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
     """
     Parse pasted text of 'Player [tab or spaces] Date of entry' into a clean Name list.
     Works for lines like:
-    - 'Olivia Adamska\\tTue 11/11/2025 12:30'
+    - 'Olivia Adamska\tTue 11/11/2025 12:30'
     - 'Olivia Adamska   Tue 11/11/2025 12:30'
     """
     if not raw:
@@ -112,3 +112,98 @@ def main():
                 st.error(f"Error reading rankings CSV: {e}")
 
         if tournament_file is not None:
+            try:
+                df_tournament = pd.read_csv(tournament_file)
+                st.success(f"Tournament players CSV loaded with {len(df_tournament)} rows.")
+                st.dataframe(df_tournament.head(20), use_container_width=True)
+            except Exception as e:
+                st.error(f"Error reading tournament CSV: {e}")
+
+        if df_rankings is not None and df_tournament is not None:
+            st.markdown("---")
+            st.subheader("Matched Tournament Players with Rankings")
+
+            df_tournament["Name_clean"] = df_tournament["Name"].astype(str).str.strip()
+            df_rankings["Player_clean"] = df_rankings["Player"].astype(str).str.strip()
+
+            merged = df_tournament.merge(
+                df_rankings,
+                left_on="Name_clean",
+                right_on="Player_clean",
+                how="left",
+                suffixes=("_tournament", "_rankings"),
+            )
+
+            cols_to_show = []
+            for c in ["Name", "Rank", "Singles Points", "Doubles Points", "County", "Age group"]:
+                if c in merged.columns:
+                    cols_to_show.append(c)
+
+            if not cols_to_show:
+                cols_to_show = merged.columns.tolist()
+
+            st.dataframe(merged[cols_to_show], use_container_width=True)
+
+            csv_bytes = merged.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            st.download_button(
+                label="⬇️ Download merged players + rankings CSV",
+                data=csv_bytes,
+                file_name="tournament_players_with_rankings.csv",
+                mime="text/csv",
+            )
+        elif rankings_file is not None or tournament_file is not None:
+            st.info("Upload **both** a rankings CSV and a tournament players CSV to see matches.")
+
+    # -------------------------
+    # TAB 2 – PASTE PLAYERS FROM LTA
+    # -------------------------
+    with tab_paste:
+        st.subheader("Paste players list from LTA page")
+
+        st.markdown(
+            "1. On your iPhone, open the LTA tournament ONLINE ENTRIES page.\n"
+            "2. Select and copy the players + date block.\n"
+            "3. Paste it into the box below.\n"
+            "4. This tool extracts **just the clean list of names**.\n"
+        )
+
+        example_text = (
+            "Players                  Date of entry\n"
+            "Olivia Adamska\tTue 11/11/2025 12:30\n"
+            "Amira Afzal\tSat 08/11/2025 09:25\n"
+            "Swasthika Arunkumar\tSun 30/11/2025 09:55\n"
+            "Elena Asgill-Whalley\tTue 04/11/2025 15:02\n"
+            "Valentina Bailey\tThu 27/11/2025 12:35\n"
+            "Ellie Barker\tTue 04/11/2025 22:29\n"
+            "Esme Bartlett\tFri 28/11/2025 14:16\n"
+            "Esha Batth\tThu 13/11/2025 09:48\n"
+        )
+
+        raw_text = st.text_area(
+            "Paste the players + date text here",
+            value=example_text,
+            height=220,
+        )
+
+        if st.button("Clean & show player names"):
+            df_names = parse_players_from_text(raw_text)
+
+            if df_names.empty:
+                st.error("No valid player names found. Check the pasted text.")
+            else:
+                st.success(f"Found {len(df_names)} unique player names.")
+                st.dataframe(df_names, use_container_width=True)
+
+                csv_bytes = df_names.to_csv(
+                    index=False, encoding="utf-8-sig"
+                ).encode("utf-8-sig")
+                st.download_button(
+                    label="⬇️ Download players CSV",
+                    data=csv_bytes,
+                    file_name="tournament_players_from_paste.csv",
+                    mime="text/csv",
+                )
+
+
+if __name__ == "__main__":
+    main()
