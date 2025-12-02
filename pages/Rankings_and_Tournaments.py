@@ -7,16 +7,39 @@ from io import StringIO
 # PASTE PARSER
 # -----------------------------
 
+def looks_like_position_label(text: str) -> bool:
+    """
+    Heuristic: does this look like 'Maindraw 1', 'Qualifying 3', etc.,
+    i.e. not a real player name?
+    """
+    t = text.strip().lower()
+    if not t:
+        return False
+
+    # If it contains a digit, often it's 'Maindraw 1', 'Q3', etc.
+    has_digit = any(ch.isdigit() for ch in t)
+    starts_like_pos = (
+        t.startswith("maindraw")
+        or t.startswith("main draw")
+        or t.startswith("qualifying")
+        or t.startswith("q ")
+        or t.startswith("q-")
+    )
+
+    return has_digit or starts_like_pos
+
+
 def parse_players_from_text(raw: str) -> pd.DataFrame:
     """
     Parse pasted text into a clean Name list.
 
     Handles formats like:
-    - Header: 'Players        Date of entry'
-      Data:   'Audrina Neeladoo\\tTue 11/11/2025 12:30'
-    - Header row with 'Player' column:
-      'Player\\tStatus\\tSeed'
-      'Maindraw 1\\tCiara Moore\\t'
+    - ONLINE ENTRIES:
+        'Players        Date of entry'
+        'Olivia Adamska\\tTue 11/11/2025 12:30'
+    - Draw grids:
+        'Player\\tStatus\\tSeed'
+        'Maindraw 1\\tAudrina Neeladoo\\t'
     """
     if not raw:
         return pd.DataFrame(columns=["Name"])
@@ -62,7 +85,7 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
 
         name = ""
 
-        # Mode 1: Structured "Player" column detected
+        # Mode 1: Structured header found ("Player" column)
         if player_col_index is not None:
             if "\t" in ln:
                 raw_parts = ln.split("\t")
@@ -70,8 +93,17 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
                 raw_parts = ln.split()
 
             parts = [p.strip() for p in raw_parts if p.strip()]
+
             if len(parts) > player_col_index:
-                name = parts[player_col_index].strip()
+                candidate = parts[player_col_index].strip()
+
+                # SPECIAL CASE:
+                # If the "Player" column looks like 'Maindraw 1', 'Q2', etc.,
+                # and there is another column after it, treat THAT as the player name.
+                if looks_like_position_label(candidate) and len(parts) > player_col_index + 1:
+                    candidate = parts[player_col_index + 1].strip()
+
+                name = candidate
 
         # Mode 2: Fallback – previous heuristic logic
         if not name:
@@ -114,7 +146,6 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
 def main():
     st.title("🎾 Tournament Player Tools")
 
-    # Only the 2 working tabs now
     tab_upload, tab_paste = st.tabs(
         [
             "📂 Upload & Analyse CSVs",
@@ -206,7 +237,7 @@ def main():
     # TAB 2 – PASTE PLAYERS FROM LTA
     # -------------------------
     with tab_paste:
-        st.subheader("Paste players list from LTA page")
+        st.subheader("Paste players list from LTA or draw sheet")
 
         st.markdown(
             "You can paste **different formats**, as long as there's a header containing "
@@ -217,11 +248,11 @@ def main():
 
         example_text = (
             "Player\tStatus\tSeed\n"
-            "Maindraw 1\tAudrina Test\t\n"
-            "Maindraw 2\tAudrina Best\t\n"
-            "Maindraw 3\tAudrina Ace\t\n"
-            "Maindraw 4\tAudrina Tennis\t\n"
-            "Maindraw 5\tAudrina Winner\t\n"
+            "Maindraw 1\tAudrina Winner\t\n"
+            "Maindraw 2\tAudrina Ace\t\n"
+            "Maindraw 3\tAudrina Tennis\t\n"
+            "Maindraw 4\tAudrina Forehand\t\n"
+            "Maindraw 5\tAudrina Backhand\t\n"
         )
 
         raw_text = st.text_area(
