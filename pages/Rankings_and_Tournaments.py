@@ -11,8 +11,8 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
     """
     Parse pasted text of 'Player [tab or spaces] Date of entry' into a clean Name list.
     Works for lines like:
-    - 'Olivia Adamska\tTue 11/11/2025 12:30'
-    - 'Olivia Adamska   Tue 11/11/2025 12:30'
+    - 'Audrina Neeladoo\\tTue 11/11/2025 12:30'
+    - 'Audrina Neeladoo   Tue 11/11/2025 12:30'
     """
     if not raw:
         return pd.DataFrame(columns=["Name"])
@@ -169,20 +169,27 @@ def main():
 
         example_text = (
             "Players                  Date of entry\n"
-            "Olivia Adamska\tTue 11/11/2025 12:30\n"
-            "Amira Afzal\tSat 08/11/2025 09:25\n"
-            "Swasthika Arunkumar\tSun 30/11/2025 09:55\n"
-            "Elena Asgill-Whalley\tTue 04/11/2025 15:02\n"
-            "Valentina Bailey\tThu 27/11/2025 12:35\n"
-            "Ellie Barker\tTue 04/11/2025 22:29\n"
-            "Esme Bartlett\tFri 28/11/2025 14:16\n"
-            "Esha Batth\tThu 13/11/2025 09:48\n"
+            "Audrina Neeladoo\tTue 11/11/2025 12:30\n"
+            "Audrina Neeladoo\tSat 08/11/2025 09:25\n"
+            "Audrina Neeladoo\tSun 30/11/2025 09:55\n"
+            "Audrina Neeladoo\tTue 04/11/2025 15:02\n"
+            "Audrina Neeladoo\tThu 27/11/2025 12:35\n"
+            "Audrina Neeladoo\tTue 04/11/2025 22:29\n"
+            "Audrina Neeladoo\tFri 28/11/2025 14:16\n"
+            "Audrina Neeladoo\tThu 13/11/2025 09:48\n"
         )
 
         raw_text = st.text_area(
             "Paste the players + date text here",
             value=example_text,
             height=220,
+        )
+
+        # 🔹 New: Let you choose the file name (without .csv)
+        default_name = "tournament_players_from_paste"
+        file_name_input = st.text_input(
+            "File name for CSV (without .csv)",
+            value=default_name,
         )
 
         if st.button("Clean & show player names"):
@@ -194,13 +201,20 @@ def main():
                 st.success(f"Found {len(df_names)} unique player names.")
                 st.dataframe(df_names, use_container_width=True)
 
+                # Ensure we always end with .csv and have something sensible
+                safe_base = file_name_input.strip() or default_name
+                if not safe_base.lower().endswith(".csv"):
+                    download_name = f"{safe_base}.csv"
+                else:
+                    download_name = safe_base
+
                 csv_bytes = df_names.to_csv(
                     index=False, encoding="utf-8-sig"
                 ).encode("utf-8-sig")
                 st.download_button(
                     label="⬇️ Download players CSV",
                     data=csv_bytes,
-                    file_name="tournament_players_from_paste.csv",
+                    file_name=download_name,
                     mime="text/csv",
                 )
 
