@@ -1,6 +1,6 @@
+import base64
 import pandas as pd
 import streamlit as st
-from io import StringIO
 
 
 # -----------------------------
@@ -39,7 +39,7 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
         'Olivia Adamska\\tTue 11/11/2025 12:30'
     - Draw grids:
         'Player\\tStatus\\tSeed'
-        'Maindraw 1\\tAudrina Neeladoo\\t'
+        'Maindraw 1\\tCiara Moore\\t'
     """
     if not raw:
         return pd.DataFrame(columns=["Name"])
@@ -79,7 +79,6 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
         if header_idx is not None and idx == header_idx:
             continue
 
-        lower = ln.lower()
         if not ln:
             continue
 
@@ -248,11 +247,11 @@ def main():
 
         example_text = (
             "Player\tStatus\tSeed\n"
-            "Maindraw 1\tAudrina Winner\t\n"
-            "Maindraw 2\tAudrina Ace\t\n"
-            "Maindraw 3\tAudrina Tennis\t\n"
-            "Maindraw 4\tAudrina Forehand\t\n"
-            "Maindraw 5\tAudrina Backhand\t\n"
+            "Maindraw 1\tCiara Moore\t\n"
+            "Maindraw 2\tSummer Yardley\t\n"
+            "Maindraw 3\tAmelie Brooks\t\n"
+            "Maindraw 4\tMarelie Raath\t\n"
+            "Maindraw 5\tEllie Blackford\t\n"
         )
 
         raw_text = st.text_area(
@@ -284,15 +283,25 @@ def main():
                 else:
                     download_name = safe_base
 
-                csv_bytes = df_names.to_csv(
-                    index=False, encoding="utf-8-sig"
-                ).encode("utf-8-sig")
+                # Normal Streamlit download button
+                csv_text = df_names.to_csv(index=False, encoding="utf-8-sig")
+                csv_bytes = csv_text.encode("utf-8-sig")
+
                 st.download_button(
                     label="⬇️ Download players CSV",
                     data=csv_bytes,
                     file_name=download_name,
                     mime="text/csv",
                 )
+
+                # Extra: Save-As link for iPhone
+                b64 = base64.b64encode(csv_bytes).decode()
+                href = f'<a href="data:text/csv;base64,{b64}" download="{download_name}">📥 Download via iPhone “Save As”</a>'
+
+                st.markdown(
+                    "If Safari doesn’t ask where to save, use this link instead:",
+                )
+                st.markdown(href, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
