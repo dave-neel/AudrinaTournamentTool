@@ -36,7 +36,7 @@ def parse_players_from_text(raw: str) -> pd.DataFrame:
     Handles formats like:
     - ONLINE ENTRIES:
         'Players        Date of entry'
-        'Olivia Adamska\\tTue 11/11/2025 12:30'
+        'Audrina Tennis\\tTue 11/11/2025 12:30'
     - Draw grids:
         'Player\\tStatus\\tSeed'
         'Maindraw 1\\tCiara Moore\\t'
@@ -247,11 +247,11 @@ def main():
 
         example_text = (
             "Player\tStatus\tSeed\n"
-            "Maindraw 1\tCiara Moore\t\n"
-            "Maindraw 2\tSummer Yardley\t\n"
-            "Maindraw 3\tAmelie Brooks\t\n"
-            "Maindraw 4\tMarelie Raath\t\n"
-            "Maindraw 5\tEllie Blackford\t\n"
+            "Maindraw 1\tAudrina Tennis\t\n"
+            "Maindraw 2\tAudrina Ace\t\n"
+            "Maindraw 3\tAudrina Serve\t\n"
+            "Maindraw 4\tAudrina Forehand\t\n"
+            "Maindraw 5\tAudrina Backhand\t\n"
         )
 
         raw_text = st.text_area(
