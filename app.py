@@ -1,299 +1,400 @@
-import math
-from io import StringIO
 
-import requests
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import altair as alt
 
+st.title("Tournament vs LTA Rankings matcher")
 
-# -----------------------------
-# TABLE EXTRACTION USING read_html
-# -----------------------------
+st.write(
+    "Upload your **tournament players CSV** (with a `Name` column) "
+    "and your **LTA rankings CSV** (with a `Player` column)."
+)
 
-def extract_ranking_table(html: str) -> pd.DataFrame | None:
-    """Extract the LTA ranking table as a clean DataFrame."""
-    try:
-        tables = pd.read_html(StringIO(html))
-    except ValueError:
-        return None
+# File upload widgets
+players_file = st.file_uploader("Tournament players CSV", type=["csv"])
+rankings_file = st.file_uploader("Rankings CSV", type=["csv"])
 
-    for df in tables:
-        cols = [str(c).strip() for c in df.columns]
-        df.columns = cols
+players = None
+rankings = None
 
-        # Must have Rank + Player columns
-        if "Rank" not in cols or "Player" not in cols:
-            continue
+if players_file is not None:
+    players = pd.read_csv(players_file)
+    st.subheader("Preview: tournament players")
+    st.write(players.head())
 
-        # Remove pager/summary rows that sneak into the table
-        rank_str = df["Rank"].astype(str)
-        is_bad = rank_str.str.contains("page|results", case=False, na=False)
-        df = df[~is_bad]
+if rankings_file is not None:
+    rankings = pd.read_csv(rankings_file)
+    st.subheader("Preview: rankings")
+    st.write(rankings.head())
 
-        # Remove blank / header-style "Player" rows
-        player_str = df["Player"].astype(str).str.strip()
-        df = df[player_str.ne("") & player_str.ne("Player")]
+if players is not None and rankings is not None:
+    st.markdown("---")
+    st.subheader("Match and compare")
 
-        # Drop unnamed junk columns
-        df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
+    # Normalise names
+    players["Name_norm"] = players["Name"].str.strip().str.upper()
+    rankings["Name_norm"] = rankings["Player"].str.strip().str.upper()
 
-        # Normalise column names
-        rename_map = {
-            "Singles points": "Singles Points",
-            "Doubles points": "Doubles Points",
-        }
-        df.rename(columns=rename_map, inplace=True)
-
-        return df
-
-    return None
-
-
-def extract_online_entries_table(html: str) -> pd.DataFrame | None:
-    """
-    Extract the 'Online entries' table from a tournament event page.
-
-    - Must have 'Name' column.
-    - Must have a 'Date...' column (e.g. 'Date of entry').
-    - We return a single clean column: Name.
-    - We drop withdrawn players if a 'Status' column exists.
-    """
-    try:
-        tables = pd.read_html(StringIO(html))
-    except ValueError:
-        return None
-
-    for df in tables:
-        cols = [str(c).strip() for c in df.columns]
-        df.columns = cols
-
-        if "Name" not in cols:
-            continue
-        if not any("date" in c.lower() for c in cols):
-            # We only want the ONLINE ENTRIES table with a date column
-            continue
-
-        # Exclude withdrawn players if a Status column exists
-        if "Status" in df.columns:
-            status_str = df["Status"].astype(str).str.lower()
-            df = df[~status_str.str.contains("withdrawn", na=False)]
-
-        # ✅ Clean up Name column robustly
-
-        # 1) Drop real NaN values first
-        df = df.dropna(subset=["Name"])
-
-        # 2) Convert to string and strip spaces
-        df["Name"] = df["Name"].astype(str).str.strip()
-
-        # 3) Remove blanks, header row, and "nan"/"none" artefacts
-        invalid_names = {"", "name", "nan", "none"}
-        mask_valid = ~df["Name"].str.lower().isin(invalid_names)
-        df = df[mask_valid]
-
-        if df.empty:
-            continue
-
-        return df[["Name"]]
-
-    return None
-
-
-# -----------------------------
-# SCRAPERS (requests-based for Streamlit)
-# -----------------------------
-
-def fetch_rankings(url: str, max_players: int, results_per_page: int = 25) -> pd.DataFrame:
-    """
-    Fetch rankings table from LTA rankings pages using plain HTTP requests.
-
-    This assumes that the rankings are visible without login from the Streamlit environment.
-    """
-    all_tables = []
-    pages_needed = math.ceil(max_players / results_per_page)
-
-    for page in range(1, pages_needed + 1):
-        if page == 1:
-            page_url = url
-        else:
-            # Same pattern as your Tkinter tool:
-            #   &p={page}&ps={results_per_page}
-            page_url = f"{url}&p={page}&ps={results_per_page}"
-
-        st.write(f"➡️ Fetching rankings page {page}: `{page_url}`")
-
-        resp = requests.get(page_url)
-        if resp.status_code != 200:
-            st.warning(f"Page {page}: HTTP {resp.status_code}, skipping.")
-            continue
-
-        df_page = extract_ranking_table(resp.text)
-        if df_page is not None and not df_page.empty:
-            st.write(f"✅ Found {len(df_page)} ranking rows on this page.")
-            all_tables.append(df_page)
-        else:
-            st.warning("⚠️ No ranking rows found on this page.")
-
-        total_rows = sum(len(t) for t in all_tables)
-        if total_rows >= max_players:
-            break
-
-    if not all_tables:
-        return pd.DataFrame()
-
-    combined = pd.concat(all_tables, ignore_index=True)
-    combined = combined.iloc[:max_players]
-
-    if "Rank.1" in combined.columns:
-        combined = combined.drop(columns=["Rank.1"])
-
-    return combined
-
-
-def fetch_tournament_players(url: str) -> pd.DataFrame:
-    """
-    Fetch tournament ONLINE ENTRIES players using plain HTTP requests.
-    """
-    st.write(f"➡️ Fetching tournament ONLINE ENTRIES from:")
-    st.code(url, language="text")
-
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        st.error(f"HTTP {resp.status_code} when fetching the page.")
-        return pd.DataFrame()
-
-    df_online = extract_online_entries_table(resp.text)
-
-    if df_online is None or df_online.empty:
-        st.error("Could not find an 'Online entries' table with Name + Date.")
-        return pd.DataFrame()
-
-    # ✅ Final clean just like in the Tkinter version
-    df_online = df_online.dropna(subset=["Name"])
-    df_online["Name"] = df_online["Name"].astype(str).str.strip()
-
-    invalid_names = {"", "nan", "none"}
-    df_online = df_online[~df_online["Name"].str.lower().isin(invalid_names)]
-
-    return df_online.reset_index(drop=True)
-
-
-# -----------------------------
-# STREAMLIT UI
-# -----------------------------
-
-def main():
-    st.set_page_config(page_title="Audrina Tournament Tool", layout="wide")
-
-    st.title("🎾 Audrina Tournament & Rankings Tool")
-
-    tab_rankings, tab_tournament = st.tabs(
-        ["📊 Rankings Downloader", "🧾 Tournament ONLINE ENTRIES"]
+    # Merge (keep all tournament players)
+    merged = players.merge(
+        rankings,
+        on="Name_norm",
+        how="left",
+        suffixes=("_tournament", "_ranking")
     )
 
-    # -------------------------
-    # TAB 1 – RANKINGS
-    # -------------------------
-    with tab_rankings:
-        st.subheader("Download LTA Rankings")
+    # Flag whether each tournament player was found in rankings
+    merged["Found_in_rankings"] = ~merged["Player"].isna()
 
-        default_rankings_url = (
-            "https://competitions.lta.org.uk/ranking/category.aspx"
-            "?id=49130&category=4545"
+    # Numeric versions for sorting / calculations
+    if "Rank" in merged.columns:
+        merged["Rank_num"] = pd.to_numeric(merged["Rank"], errors="coerce")
+
+    if "WTN Singles" in merged.columns:
+        merged["WTN_num"] = pd.to_numeric(merged["WTN Singles"], errors="coerce")
+
+    # Clean encoding issues in Year of birth (removes Â etc.)
+    if "Year of birth" in merged.columns:
+        merged["Year of birth"] = (
+            merged["Year of birth"]
+            .astype(str)
+            .str.replace("Â", "", regex=False)
+            .str.replace("[^0-9]", "", regex=True)  # remove any non-digits
         )
 
-        rankings_url = st.text_input(
-            "Rankings URL",
-            value=default_rankings_url,
-            help="Paste the full LTA rankings URL.",
-        )
+    # Sort by Rank if available (None at the bottom)
+    if "Rank" in merged.columns:
+        merged = merged.sort_values("Rank_num", na_position="last")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            max_players = st.number_input(
-                "Max players to fetch",
-                min_value=1,
-                max_value=5000,
-                value=1000,
-                step=50,
+    cols_to_keep = [
+        "Name",
+        "Found_in_rankings",
+        "Rank",
+        "Player",
+        "Year of birth",
+        "WTN Singles",
+        "WTN Doubles",
+        "Play County",
+        "Singles Points",
+        "Doubles Points",
+        "Total points",
+    ]
+    cols_to_keep = [c for c in cols_to_keep if c in merged.columns]
+
+    result = merged[cols_to_keep]
+
+    st.write("### Result (all tournament players)")
+    st.write(result)
+
+    # --- Show players NOT found in rankings separately ---
+    not_found = merged[merged["Found_in_rankings"] == False][["Name"]].sort_values("Name")
+
+    if len(not_found) > 0:
+        st.markdown("---")
+        st.write("### Players NOT found in rankings.csv")
+        st.write(not_found)
+    else:
+        st.write("All tournament players were found in rankings.csv ✅")
+
+    # ------------------------------
+    #  RANKING / WTN VISUALISATIONS
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("Visualise tournament strength")
+
+    # WTN distribution chart
+    if "WTN_num" in merged.columns and merged["WTN_num"].notna().any():
+        st.write("**WTN Singles distribution (lower is stronger)**")
+        wtn_data = merged[merged["WTN_num"].notna()][["Name", "WTN_num"]]
+
+        wtn_hist = (
+            alt.Chart(wtn_data)
+            .mark_bar()
+            .encode(
+                x=alt.X("WTN_num:Q", bin=alt.Bin(maxbins=20), title="WTN Singles"),
+                y=alt.Y("count():Q", title="Number of players"),
             )
-        with col2:
-            results_per_page = st.number_input(
-                "Results per page (ps parameter)",
-                min_value=1,
-                max_value=100,
-                value=25,
-                step=1,
-                help="Usually 25 on the LTA rankings pages.",
+            .properties(height=250)
+        )
+
+        st.altair_chart(wtn_hist, use_container_width=True)
+    else:
+        st.info("No valid WTN Singles data available to plot.")
+
+    # Ranking distribution chart
+    if "Rank_num" in merged.columns and merged["Rank_num"].notna().any():
+        st.write("**LTA Combined Ranking (smaller number is stronger)**")
+        rank_data = merged[merged["Rank_num"].notna()][["Name", "Rank_num"]]
+
+        rank_chart = (
+            alt.Chart(rank_data)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    "Rank_num:Q",
+                    bin=alt.Bin(maxbins=25),
+                    title="LTA Combined Ranking",
+                ),
+                y=alt.Y("count():Q", title="Number of players"),
             )
-
-        if st.button("Download rankings"):
-            if not rankings_url.strip():
-                st.error("Please enter a rankings URL.")
-            else:
-                with st.spinner("Fetching rankings…"):
-                    df_rankings = fetch_rankings(
-                        url=rankings_url.strip(),
-                        max_players=int(max_players),
-                        results_per_page=int(results_per_page),
-                    )
-
-                if df_rankings.empty:
-                    st.error("No rankings data found.")
-                else:
-                    st.success(f"Fetched {len(df_rankings)} ranking rows.")
-                    st.dataframe(df_rankings, use_container_width=True)
-
-                    csv_bytes = df_rankings.to_csv(index=False, encoding="utf-8-sig").encode(
-                        "utf-8-sig"
-                    )
-                    st.download_button(
-                        label="⬇️ Download rankings CSV",
-                        data=csv_bytes,
-                        file_name="rankings_downloaded.csv",
-                        mime="text/csv",
-                    )
-
-    # -------------------------
-    # TAB 2 – TOURNAMENT ONLINE ENTRIES
-    # -------------------------
-    with tab_tournament:
-        st.subheader("Download Tournament ONLINE ENTRIES (Players List)")
-
-        default_tournament_url = (
-            "https://competitions.lta.org.uk/sport/event.aspx"
-            "?id=8EC7F377-F52D-4342-A845-E29703AFB4BD&event=2"
+            .properties(height=250)
         )
 
-        tournament_url = st.text_input(
-            "Tournament ONLINE ENTRIES URL",
-            value=default_tournament_url,
-            help="Paste the LTA tournament event URL for the ONLINE ENTRIES.",
+        st.altair_chart(rank_chart, use_container_width=True)
+    else:
+        st.info("No valid ranking data available to plot.")
+
+    # ------------------------------
+    #  DRAW STRUCTURE + POSITION CHECKER
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("Check position of a player in this tournament")
+
+    # Selection basis
+    selection_basis = st.radio(
+        "Tournament selection is based on:",
+        ["WTN (with ranking as tie-break)", "Ranking only"],
+    )
+
+    # Draw structure inputs
+    st.markdown("**Draw structure**")
+    dc1, dc2, dc3 = st.columns(3)
+    with dc1:
+        main_draw_size = st.number_input(
+            "Main draw size", min_value=1, value=32, step=1
+        )
+    with dc2:
+        qual_draw_size = st.number_input(
+            "Qualifying draw size (0 if none)", min_value=0, value=0, step=1
+        )
+    with dc3:
+        qualifiers_to_main = st.number_input(
+            "Qualifiers into main draw", min_value=0, value=0, step=1
         )
 
-        if st.button("Download tournament players"):
-            if not tournament_url.strip():
-                st.error("Please enter a tournament ONLINE ENTRIES URL.")
+    dc4, dc5 = st.columns(2)
+    with dc4:
+        wildcards_main = st.number_input(
+            "Wildcards in main draw", min_value=0, value=0, step=1
+        )
+    with dc5:
+        wildcards_qual = st.number_input(
+            "Wildcards in qualifying draw", min_value=0, value=0, step=1
+        )
+
+    st.caption(
+        "Example: 24Q / 32M with 8 qualifiers → main draw size 32, qualifying draw size 24, "
+        "qualifiers into main 8."
+    )
+
+    # Player inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        first_name = st.text_input("First name", "")
+    with col2:
+        surname = st.text_input("Surname", "")
+
+    col3, col4 = st.columns(2)
+    with col3:
+        wtn_input = st.text_input("Player's WTN Singles (optional)", "")
+    with col4:
+        rank_input = st.text_input("Player's LTA Combined Ranking (optional)", "")
+
+    # Helper to classify position vs draw
+    def classify_position(position: int | None):
+        if position is None:
+            return "No valid position calculated."
+
+        # effective spots
+        direct_main = max(
+            0, int(main_draw_size) - int(wildcards_main) - int(qualifiers_to_main)
+        )
+        direct_qual = max(0, int(qual_draw_size) - int(wildcards_qual))
+
+        # Clamp if user puts silly numbers
+        total_spots = direct_main + direct_qual
+
+        if total_spots == 0:
+            return "No available draw spots configured (check draw sizes and wildcards)."
+
+        if position <= direct_main:
+            return (
+                f"✅ **Directly in main draw** (position {position} within main-draw acceptances; "
+                f"{direct_main} direct main spots)."
+            )
+        elif qual_draw_size > 0 and position <= direct_main + direct_qual:
+            qual_position = position - direct_main
+            return (
+                f"✅ **In qualifying draw** (position {qual_position} within qualifying; "
+                f"{direct_qual} qualifying spots)."
+            )
+        else:
+            if qual_draw_size > 0:
+                return (
+                    f"⚠️ **Outside draw** – on alternates list. "
+                    f"Position {position} but only {total_spots} total spots "
+                    f"({direct_main} main + {direct_qual} qualifying)."
+                )
             else:
-                with st.spinner("Fetching tournament players…"):
-                    df_players = fetch_tournament_players(tournament_url.strip())
+                return (
+                    f"⚠️ **Outside main draw** – on alternates list. "
+                    f"Position {position} but only {direct_main} main-draw spots."
+                )
 
-                if df_players.empty:
-                    st.error("No players data found.")
+    # Main button logic
+    if st.button("Calculate position"):
+        full_name = (first_name + " " + surname).strip()
+        st.write(f"**Player:** {full_name or '(no name entered)'}")
+
+        position_wtn = None
+        position_rank = None
+
+        # --- By WTN ---
+        if wtn_input.strip() != "" and "WTN_num" in merged.columns:
+            try:
+                player_wtn = float(wtn_input)
+                valid_wtn = merged[merged["WTN_num"].notna()].copy()
+
+                # If ranking available, use for tie-break
+                if rank_input.strip() != "" and "Rank_num" in merged.columns:
+                    try:
+                        player_rank_val = int(rank_input)
+                    except ValueError:
+                        player_rank_val = None
                 else:
-                    st.success(f"Fetched {len(df_players)} players from ONLINE ENTRIES.")
-                    st.dataframe(df_players, use_container_width=True)
+                    player_rank_val = None
 
-                    csv_bytes = df_players.to_csv(
-                        index=False, encoding="utf-8-sig"
-                    ).encode("utf-8-sig")
-                    st.download_button(
-                        label="⬇️ Download tournament players CSV",
-                        data=csv_bytes,
-                        file_name="tournament_players.csv",
-                        mime="text/csv",
+                # players with strictly better WTN
+                better = valid_wtn[valid_wtn["WTN_num"] < player_wtn]
+
+                # same WTN but better ranking (only if we know player's ranking)
+                if player_rank_val is not None and "Rank_num" in valid_wtn.columns:
+                    better_ties = valid_wtn[
+                        (valid_wtn["WTN_num"] == player_wtn)
+                        & (valid_wtn["Rank_num"].notna())
+                        & (valid_wtn["Rank_num"] < player_rank_val)
+                    ]
+                    better = pd.concat([better, better_ties])
+
+                position_wtn = int(len(better)) + 1
+                total_with_wtn = len(valid_wtn)
+
+                st.write(
+                    f"- **WTN basis**: position **{position_wtn}** out of {total_with_wtn} players "
+                    f"with a WTN Singles value."
+                )
+
+                num_stronger = len(better)
+                st.write(
+                    f"  → {num_stronger} players have a **better (lower)** WTN (and tie-break if used); "
+                    f"{total_with_wtn - position_wtn} have a **worse (higher)** WTN."
+                )
+
+                # WTN distribution with player marker
+                wtn_data = valid_wtn[["Name", "WTN_num"]]
+                base = (
+                    alt.Chart(wtn_data)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "WTN_num:Q",
+                            bin=alt.Bin(maxbins=20),
+                            title="WTN Singles",
+                        ),
+                        y=alt.Y("count():Q", title="Number of players"),
                     )
+                    .properties(title="WTN Singles distribution with player highlighted")
+                )
+                marker = (
+                    alt.Chart(pd.DataFrame({"WTN_num": [player_wtn]}))
+                    .mark_rule(color="red", strokeWidth=2)
+                    .encode(x="WTN_num:Q")
+                )
+                st.altair_chart(base + marker, use_container_width=True)
 
+            except ValueError:
+                st.error("WTN entered is not a valid number.")
 
-if __name__ == "__main__":
-    main()
+        elif wtn_input.strip() != "":
+            st.warning("No 'WTN Singles' column found in the rankings data.")
+
+        # --- By Ranking ---
+        if rank_input.strip() != "" and "Rank_num" in merged.columns:
+            try:
+                player_rank = int(rank_input)
+                valid_rank = merged[merged["Rank_num"].notna()].copy()
+                valid_rank = valid_rank.sort_values("Rank_num", ascending=True)
+
+                num_better_rank = (valid_rank["Rank_num"] < player_rank).sum()
+                position_rank = int(num_better_rank) + 1
+                total_with_rank = len(valid_rank)
+
+                st.write(
+                    f"- **Ranking basis**: position **{position_rank}** out of {total_with_rank} players "
+                    f"who have a ranking."
+                )
+                st.write(
+                    f"  → {num_better_rank} players are **ranked higher** (better number); "
+                    f"{total_with_rank - position_rank} are **ranked lower**."
+                )
+
+                # Ranking chart with player's rank marked
+                rank_data = valid_rank[["Name", "Rank_num"]]
+                base_rank = (
+                    alt.Chart(rank_data)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "Rank_num:Q",
+                            bin=alt.Bin(maxbins=25),
+                            title="LTA Combined Ranking",
+                        ),
+                        y=alt.Y("count():Q", title="Number of players"),
+                    )
+                    .properties(title="Ranking distribution with player highlighted")
+                )
+                marker_rank = (
+                    alt.Chart(pd.DataFrame({"Rank_num": [player_rank]}))
+                    .mark_rule(color="red", strokeWidth=2)
+                    .encode(x="Rank_num:Q")
+                )
+                st.altair_chart(base_rank + marker_rank, use_container_width=True)
+
+            except ValueError:
+                st.error("Ranking entered is not a valid whole number.")
+
+        elif rank_input.strip() != "":
+            st.warning("No 'Rank' column found in the rankings data.")
+
+        # ------------------------------
+        #  ENTRY CHANCE SUMMARY
+        # ------------------------------
+        st.markdown("### Entry chance summary")
+
+        if selection_basis.startswith("WTN"):
+            summary = classify_position(position_wtn)
+            if position_wtn is None:
+                st.warning(
+                    "Selection basis is WTN, but I couldn't calculate a WTN-based position. "
+                    "Check that you entered a valid WTN and that the rankings file contains WTN Singles."
+                )
+            else:
+                st.write(summary)
+        else:  # Ranking only
+            summary = classify_position(position_rank)
+            if position_rank is None:
+                st.warning(
+                    "Selection basis is Ranking, but I couldn't calculate a ranking-based position. "
+                    "Check that you entered a valid ranking and that the rankings file contains Rank."
+                )
+            else:
+                st.write(summary)
+
+    # Download button for full result
+    csv_data = result.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download full result as CSV",
+        data=csv_data,
+        file_name="tournament_with_rankings.csv",
+        mime="text/csv",
+    )
