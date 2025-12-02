@@ -1,3 +1,7 @@
 streamlit
 pandas
 altair
+streamlit
+pandas
+requests
+lxml
