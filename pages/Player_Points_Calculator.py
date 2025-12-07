@@ -71,19 +71,33 @@ def parse_pasted_table(raw: str) -> pd.DataFrame:
     """
     Parse a pasted LTA-style table from the website into a DataFrame.
 
-    We assume:
-    - First non-empty line is the header
-    - Columns are separated by tabs (\t) or big gaps of spaces
-    - Subsequent lines follow the same structure
+    We now:
+    - Ignore any lines BEFORE the real header row
+      (we search for the first line containing 'week')
+    - Assume that header row has columns separated by tabs or 2+ spaces
+    - Apply the same split logic to subsequent rows
     """
     if not raw:
         return pd.DataFrame()
 
+    # Keep all non-empty lines
     lines = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
     if not lines:
         return pd.DataFrame()
 
-    header_line = lines[0]
+    # Find header line: the first line that looks like it contains a Week column
+    header_idx = None
+    for idx, ln in enumerate(lines):
+        if "week" in ln.lower():
+            header_idx = idx
+            break
+
+    # If we never find a line with 'week', we can't reliably parse
+    if header_idx is None:
+        return pd.DataFrame()
+
+    header_line = lines[header_idx]
+    data_lines = lines[header_idx + 1 :]
 
     # Decide separator: prefer tabs, else split on 2+ spaces
     if "\t" in header_line:
@@ -95,12 +109,15 @@ def parse_pasted_table(raw: str) -> pd.DataFrame:
         sep = None  # use regex later
 
     rows = []
-    for ln in lines[1:]:
+    for ln in data_lines:
         if sep == "\t":
             parts = [p.strip() for p in ln.split("\t")]
         else:
             parts = re.split(r"\s{2,}", ln.strip())
             parts = [p.strip() for p in parts if p.strip()]
+
+        if not parts:
+            continue
 
         # pad/truncate to match columns
         if len(parts) < len(cols):
@@ -109,6 +126,9 @@ def parse_pasted_table(raw: str) -> pd.DataFrame:
             parts = parts[: len(cols)]
 
         rows.append(parts)
+
+    if not rows:
+        return pd.DataFrame()
 
     df = pd.DataFrame(rows, columns=cols)
     df = normalize_columns(df)
@@ -214,9 +234,9 @@ def main():
         "This tool is designed to work well on an **iPhone**.\n\n"
         "You:\n"
         "1. Open the LTA player page in Safari (e.g. Audrina's).\n"
-        "2. Copy the entire **Singles Results** table.\n"
+        "2. Copy the entire **Singles Results** section.\n"
         "3. Paste it below.\n"
-        "4. Copy and paste the **Doubles Results** table.\n"
+        "4. Copy and paste the **Doubles Results** section.\n"
         "5. Choose a target date (e.g. the Monday of Week 01-2026).\n"
         "6. I calculate the player's U16-style points (best 6 singles + best 6 doubles, doubles at 25%)."
     )
@@ -251,38 +271,40 @@ def main():
 
     st.markdown("### 3️⃣ Paste Singles and Doubles tables from LTA")
 
-    with st.expander("📋 Paste Singles Results table here"):
+    with st.expander("📋 Paste Singles Results section here"):
         st.markdown(
             "On the LTA page:\n"
             "- Scroll to **Singles Results**\n"
-            "- Long-press → Select All → Copy\n"
+            "- Drag to select from the header row (where it shows 'Week ...') down to the bottom of the table\n"
+            "- Copy\n"
             "- Paste into this box."
         )
         singles_raw = st.text_area(
-            "Singles table",
-            height=200,
+            "Singles section",
+            height=220,
             placeholder="Week\tTournament\tGrade\tAge Group\tPoints\n49-2025\tExample Tournament\t3\t18U\t450\n...",
         )
 
-    with st.expander("📋 Paste Doubles Results table here"):
+    with st.expander("📋 Paste Doubles Results section here"):
         st.markdown(
             "On the LTA page:\n"
             "- Scroll to **Doubles Results**\n"
-            "- Long-press → Select All → Copy\n"
+            "- Drag to select from the header row (where it shows 'Week ...') down to the bottom of the table\n"
+            "- Copy\n"
             "- Paste into this box."
         )
         doubles_raw = st.text_area(
-            "Doubles table",
-            height=200,
+            "Doubles section",
+            height=220,
             placeholder="Week\tTournament\tGrade\tAge Group\tPoints\n49-2025\tExample Doubles\t3\t18U\t450\n...",
         )
 
     if st.button("🔢 Calculate points"):
         if not singles_raw.strip():
-            st.error("Please paste the Singles table.")
+            st.error("Please paste the Singles section.")
             return
         if not doubles_raw.strip():
-            st.error("Please paste the Doubles table.")
+            st.error("Please paste the Doubles section.")
             return
 
         # Parse pasted tables
@@ -290,10 +312,10 @@ def main():
         df_doubles = parse_pasted_table(doubles_raw)
 
         if df_singles.empty:
-            st.error("Could not parse Singles table. Check the format after pasting.")
+            st.error("Could not find a header row with 'Week' in the Singles section. Try selecting from the header row downwards.")
             return
         if df_doubles.empty:
-            st.error("Could not parse Doubles table. Check the format after pasting.")
+            st.error("Could not find a header row with 'Week' in the Doubles section. Try selecting from the header row downwards.")
             return
 
         st.success("Tables parsed successfully.")
