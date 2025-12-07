@@ -223,212 +223,6 @@ def compute_u16_style_points(df_singles: pd.DataFrame, df_doubles: pd.DataFrame)
 
 
 # -----------------------------
-# Helpers for ranking table
-# -----------------------------
-
-def normalize_columns_ranking(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For category ranking tables.
-    - any column containing 'rank' -> 'Rank'
-    - any column containing 'player' -> 'Player'
-    - any column containing 'total' -> 'Total'
-    - any column containing 'year of birth' or both 'year' and 'birth' -> 'BirthYear'
-    """
-    new_cols = []
-    for c in df.columns:
-        cl = str(c).strip()
-        cl_low = cl.lower()
-        if "rank" in cl_low:
-            new_cols.append("Rank")
-        elif "player" in cl_low:
-            new_cols.append("Player")
-        elif "year of birth" in cl_low or ("year" in cl_low and "birth" in cl_low):
-            new_cols.append("BirthYear")
-        elif "total" in cl_low:
-            new_cols.append("Total")
-        else:
-            new_cols.append(cl)
-    df = df.copy()
-    df.columns = new_cols
-    return df
-
-
-def parse_ranking_table(raw: str) -> pd.DataFrame:
-    """
-    Parse a pasted LTA category ranking table (e.g. U16 rankings) into a DataFrame.
-
-    Supports the "stacked" format where:
-    - Header labels are each on their own line (Rank, Player, Member ID, Year of birth, ...)
-    - Each row starts with a line that is just the numeric rank (1, 2, 3, ...)
-      followed by one or more lines containing the rest of the fields.
-    """
-    if not raw:
-        return pd.DataFrame()
-
-    lines = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
-    if not lines:
-        return pd.DataFrame()
-
-    # 1) Split header vs data: header until first line that is purely an integer (rank)
-    header_lines = []
-    data_lines = []
-    in_data = False
-
-    for ln in lines:
-        stripped = ln.strip()
-        if not in_data and re.fullmatch(r"\d+", stripped):
-            in_data = True
-            data_lines.append(ln)
-        elif not in_data:
-            header_lines.append(ln)
-        else:
-            data_lines.append(ln)
-
-    if not header_lines or not data_lines:
-        return pd.DataFrame()
-
-    # 2) Construct header columns from header_lines (one per line)
-    cols = [h.strip() for h in header_lines if h.strip()]
-    # Normalise obvious duplicates / weird spacing
-    cols = [re.sub(r"\s+", " ", c) for c in cols]
-
-    # 3) Construct rows: each row starts at a line that is just a rank number
-    rows = []
-    current_row_tokens = None
-
-    for ln in data_lines:
-        stripped = ln.strip()
-        # New row if this line is just the rank number
-        if re.fullmatch(r"\d+", stripped):
-            # save previous row if it exists
-            if current_row_tokens is not None:
-                rows.append(current_row_tokens)
-            current_row_tokens = [stripped]  # first token = Rank
-        else:
-            # add tokens from this line to current row
-            if current_row_tokens is None:
-                # if we somehow see non-rank before any rank, skip
-                continue
-            # split on tabs or 2+ spaces
-            if "\t" in ln:
-                parts = [p.strip() for p in ln.split("\t") if p.strip()]
-            else:
-                parts = re.split(r"\s{2,}", ln.strip())
-                parts = [p.strip() for p in parts if p.strip()]
-            current_row_tokens.extend(parts)
-
-    # don't forget the last row
-    if current_row_tokens is not None:
-        rows.append(current_row_tokens)
-
-    if not rows:
-        return pd.DataFrame()
-
-    # 4) Pad / truncate rows to match header length
-    fixed_rows = []
-    for tokens in rows:
-        if len(tokens) < len(cols):
-            tokens = tokens + [""] * (len(cols) - len(tokens))
-        elif len(tokens) > len(cols):
-            tokens = tokens[: len(cols)]
-        fixed_rows.append(tokens)
-
-    df = pd.DataFrame(fixed_rows, columns=cols)
-    df = normalize_columns_ranking(df)
-    return df
-
-
-def add_projected_player_and_rank(df_rank: pd.DataFrame,
-                                  player_name: str,
-                                  projected_points: float,
-                                  target_year: int) -> tuple[int | None, pd.DataFrame]:
-    """
-    Given a ranking DataFrame, a player name and projected total points,
-    and the target year, return (projected_rank, adjusted_df).
-
-    We:
-    - Remove any players who age out of U16 at the start of target_year
-      (BirthYear == target_year - 17)
-    - Remove any existing entry for this player
-    - Add the projected player with projected_points
-    - Sort and assign new ranks
-    """
-    if df_rank.empty:
-        return None, df_rank
-
-    df = df_rank.copy()
-
-    # Normalise player names for matching
-    df["Player_norm"] = df["Player"].astype(str).str.strip().str.lower()
-
-    # Remove players who age out (e.g. for 2026, remove 2009 births)
-    oldest_birth_year_to_remove = target_year - 17
-    if "BirthYear" in df.columns:
-        # clean to extract 4-digit year
-        birth_clean = df["BirthYear"].astype(str).str.extract(r"(\d{4})")[0]
-        birth_years = pd.to_numeric(birth_clean, errors="coerce")
-        df["BirthYearNum"] = birth_years
-        df = df[df["BirthYearNum"] != oldest_birth_year_to_remove]
-
-    # Remove any existing entry for this player
-    name_norm = player_name.strip().lower()
-    df = df[df["Player_norm"] != name_norm]
-
-    # Decide which points column to use
-    # Prefer 'Total'. If not, look for first column containing 'point'.
-    points_col = None
-    if "Total" in df.columns:
-        points_col = "Total"
-    else:
-        for c in df.columns:
-            if "point" in str(c).lower():
-                points_col = c
-                break
-
-    if points_col is None:
-        # Can't rank without points, just return
-        return None, df
-
-    # Clean points
-    cleaned = df[points_col].astype(str).str.replace(r"[^\d]", "", regex=True)
-    df["PointsNum"] = pd.to_numeric(cleaned, errors="coerce").fillna(0).astype(int)
-
-    # Add projected player as new row
-    new_row = {
-        "Rank": "",
-        "Player": player_name,
-        "Player_norm": name_norm,
-        points_col: str(int(projected_points)),
-        "PointsNum": int(projected_points),
-    }
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-
-    # Sort by points descending, assign new ranks
-    df = df.sort_values("PointsNum", ascending=False).reset_index(drop=True)
-    df["NewRank"] = df.index + 1
-
-    # Find projected player's row
-    row = df[df["Player_norm"] == name_norm]
-    if row.empty:
-        projected_rank = None
-    else:
-        projected_rank = int(row["NewRank"].iloc[0])
-
-    # Tidy columns for display
-    display_cols = []
-    for c in ["NewRank", "Rank", "Player", "BirthYear", points_col]:
-        if c in df.columns:
-            display_cols.append(c)
-    for c in df.columns:
-        if c not in display_cols and not c.endswith("_norm") and c not in ["PointsNum", "BirthYearNum"]:
-            display_cols.append(c)
-
-    df_display = df[display_cols]
-
-    return projected_rank, df_display
-
-
-# -----------------------------
 # Streamlit UI
 # -----------------------------
 
@@ -437,9 +231,11 @@ def main():
 
     st.markdown(
         "This tool is designed to work well on an **iPhone**.\n\n"
-        "Part 1: Calculate a player's U16-style ranking points for a chosen week.\n"
-        "Part 2: Paste the U16 rankings table and estimate the player's projected U16 position "
-        "after older players age out."
+        "Use it to calculate a player's U16-style ranking points for a chosen week:\n\n"
+        "- Best 6 **Singles** results (any category)\n"
+        "- Best 6 **Doubles** results (any category)\n"
+        "- Doubles counted at **25%**\n"
+        "- Only tournaments within **52 weeks** of your chosen date are included."
     )
 
     st.markdown("### 1️⃣ Player Info")
@@ -450,7 +246,7 @@ def main():
     )
 
     player_name = st.text_input(
-        "Player name (as shown on rankings page)",
+        "Player name (for your notes)",
         value="Audrina Neeladoo",
     )
 
@@ -460,7 +256,7 @@ def main():
         max_value=2100,
         value=2011,
         step=1,
-        help="Used to understand when they transition into U16+ age group.",
+        help="Used only for your own reference here.",
     )
 
     st.markdown("### 2️⃣ Target ranking week")
@@ -505,25 +301,7 @@ def main():
             placeholder="Week\tTournament\tEvent\tResult\tPoints\tMatches\n49-2025\tExample Doubles\t18U Doubles\tW\t450\t4\n...",
         )
 
-    st.markdown("### 4️⃣ Paste U16 rankings table to estimate projected position")
-
-    with st.expander("📋 Paste current U16 rankings table here"):
-        st.markdown(
-            "From the U16 rankings page (e.g. Girls U16):\n"
-            "- Open the LTA U16 ranking page in your browser\n"
-            "- Select from **'Rank'** down to the last player's line\n"
-            "- Copy\n"
-            "- Paste into this box.\n\n"
-            "I will automatically read the **Year of birth** column and remove players who are "
-            "too old for U16 at the chosen target year."
-        )
-        ranking_raw = st.text_area(
-            "U16 rankings table",
-            height=260,
-            placeholder="Rank\nPlayer\nMember ID\nYear of birth\nWTN Singles\n...\nTotal points\n1\nExample Player\n...\n2009\n...\n12345\n...",
-        )
-
-    if st.button("🔢 Calculate points and projected U16 rank"):
+    if st.button("🔢 Calculate points"):
         if not singles_raw.strip():
             st.error("Please paste the Singles section.")
             return
@@ -560,15 +338,12 @@ def main():
         st.markdown("#### Valid Doubles Results (within last 52 weeks)")
         st.dataframe(df_doubles_valid, use_container_width=True)
 
-        # Age info (for future logic if needed)
-        age_at_target = iso_year - int(birth_year)
-        st.info(f"Age at target year: approx **{age_at_target}**.")
-
         # Apply U16+ style scoring
         result = compute_u16_style_points(df_singles_valid, df_doubles_valid)
 
         st.markdown("### 🧮 U16+ Style Points Summary")
 
+        st.write(f"**Player:** {player_name}")
         st.write(f"**Singles total (best 6):** {result['singles_total']}")
         st.write(f"**Doubles raw total (best 6):** {result['doubles_raw']}")
         st.write(f"**Doubles weighted @ 25%:** {result['doubles_weighted']:.1f}")
@@ -579,38 +354,6 @@ def main():
 
         with st.expander("See doubles tournaments used"):
             st.dataframe(result["df_d_used"], use_container_width=True)
-
-        # If a ranking table was pasted, estimate projected U16 rank
-        if ranking_raw.strip():
-            df_rank = parse_ranking_table(ranking_raw)
-            if df_rank.empty:
-                st.error(
-                    "Could not parse the U16 rankings table.\n\n"
-                    "Tips:\n"
-                    "- Make sure you included the header labels (Rank / Player / Year of birth / ...).\n"
-                    "- Make sure each player's block (rank + lines under it) is included."
-                )
-            else:
-                st.success("U16 rankings table parsed successfully.")
-                st.write("**Ranking columns detected:**", list(df_rank.columns))
-
-                projected_rank, df_adjusted = add_projected_player_and_rank(
-                    df_rank=df_rank,
-                    player_name=player_name,
-                    projected_points=result["final_total"],
-                    target_year=iso_year,
-                )
-
-                st.markdown("### 📊 Projected U16 rankings (after age roll-up)")
-
-                if projected_rank is not None:
-                    st.success(f"Projected rank for **{player_name}**: **{projected_rank}**")
-                else:
-                    st.warning("Could not determine projected rank (no usable points column).")
-
-                st.dataframe(df_adjusted, use_container_width=True)
-        else:
-            st.info("No U16 rankings table pasted, so projected U16 rank was not calculated.")
 
 
 if __name__ == "__main__":
