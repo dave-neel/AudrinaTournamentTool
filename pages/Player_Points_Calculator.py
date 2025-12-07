@@ -257,10 +257,10 @@ def parse_ranking_table(raw: str) -> pd.DataFrame:
     """
     Parse a pasted LTA category ranking table (e.g. U16 rankings) into a DataFrame.
 
-    We:
-    - Find the header row containing both 'rank' and 'player'
-    - Split header and rows on tabs or 2+ spaces
-    - Normalize columns
+    Supports the "stacked" format where:
+    - Header labels are each on their own line (Rank, Player, Member ID, Year of birth, ...)
+    - Each row starts with a line that is just the numeric rank (1, 2, 3, ...)
+      followed by one or more lines containing the rest of the fields.
     """
     if not raw:
         return pd.DataFrame()
@@ -269,47 +269,71 @@ def parse_ranking_table(raw: str) -> pd.DataFrame:
     if not lines:
         return pd.DataFrame()
 
-    header_idx = None
-    for idx, ln in enumerate(lines):
-        low = ln.lower()
-        if "rank" in low and "player" in low:
-            header_idx = idx
-            break
-    if header_idx is None:
+    # 1) Split header vs data: header until first line that is purely an integer (rank)
+    header_lines = []
+    data_lines = []
+    in_data = False
+
+    for ln in lines:
+        stripped = ln.strip()
+        if not in_data and re.fullmatch(r"\d+", stripped):
+            in_data = True
+            data_lines.append(ln)
+        elif not in_data:
+            header_lines.append(ln)
+        else:
+            data_lines.append(ln)
+
+    if not header_lines or not data_lines:
         return pd.DataFrame()
 
-    header_line = lines[header_idx]
-    data_lines = lines[header_idx + 1 :]
+    # 2) Construct header columns from header_lines (one per line)
+    cols = [h.strip() for h in header_lines if h.strip()]
+    # Normalise obvious duplicates / weird spacing
+    cols = [re.sub(r"\s+", " ", c) for c in cols]
 
-    if "\t" in header_line:
-        cols = [c.strip() for c in header_line.split("\t")]
-        sep = "\t"
-    else:
-        cols = re.split(r"\s{2,}", header_line.strip())
-        cols = [c.strip() for c in cols if c.strip()]
-        sep = None
-
+    # 3) Construct rows: each row starts at a line that is just a rank number
     rows = []
+    current_row_tokens = None
+
     for ln in data_lines:
-        if sep == "\t":
-            parts = [p.strip() for p in ln.split("\t")]
+        stripped = ln.strip()
+        # New row if this line is just the rank number
+        if re.fullmatch(r"\d+", stripped):
+            # save previous row if it exists
+            if current_row_tokens is not None:
+                rows.append(current_row_tokens)
+            current_row_tokens = [stripped]  # first token = Rank
         else:
-            parts = re.split(r"\s{2,}", ln.strip())
-            parts = [p.strip() for p in parts if p.strip()]
-        if not parts:
-            continue
+            # add tokens from this line to current row
+            if current_row_tokens is None:
+                # if we somehow see non-rank before any rank, skip
+                continue
+            # split on tabs or 2+ spaces
+            if "\t" in ln:
+                parts = [p.strip() for p in ln.split("\t") if p.strip()]
+            else:
+                parts = re.split(r"\s{2,}", ln.strip())
+                parts = [p.strip() for p in parts if p.strip()]
+            current_row_tokens.extend(parts)
 
-        if len(parts) < len(cols):
-            parts += [""] * (len(cols) - len(parts))
-        elif len(parts) > len(cols):
-            parts = parts[: len(cols)]
-
-        rows.append(parts)
+    # don't forget the last row
+    if current_row_tokens is not None:
+        rows.append(current_row_tokens)
 
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows, columns=cols)
+    # 4) Pad / truncate rows to match header length
+    fixed_rows = []
+    for tokens in rows:
+        if len(tokens) < len(cols):
+            tokens = tokens + [""] * (len(cols) - len(tokens))
+        elif len(tokens) > len(cols):
+            tokens = tokens[: len(cols)]
+        fixed_rows.append(tokens)
+
+    df = pd.DataFrame(fixed_rows, columns=cols)
     df = normalize_columns_ranking(df)
     return df
 
@@ -487,17 +511,16 @@ def main():
         st.markdown(
             "From the U16 rankings page (e.g. Girls U16):\n"
             "- Open the LTA U16 ranking page in your browser\n"
-            "- Select from the header row (Rank / Player / Year of birth / ... ) "
-            "down to the last row on that page\n"
+            "- Select from **'Rank'** down to the last player's line\n"
             "- Copy\n"
             "- Paste into this box.\n\n"
-            "I will automatically remove players who are too old for U16 at the chosen target year "
-            "(using the **Year of birth** column)."
+            "I will automatically read the **Year of birth** column and remove players who are "
+            "too old for U16 at the chosen target year."
         )
         ranking_raw = st.text_area(
             "U16 rankings table",
             height=260,
-            placeholder="Rank\tPlayer\tMember ID\tYear of birth\tWTN Singles\t... \tTotal points\n1\tExample Player\t...\t2009\t...\t...\t12345\n...",
+            placeholder="Rank\nPlayer\nMember ID\nYear of birth\nWTN Singles\n...\nTotal points\n1\nExample Player\n...\n2009\n...\n12345\n...",
         )
 
     if st.button("🔢 Calculate points and projected U16 rank"):
@@ -561,8 +584,12 @@ def main():
         if ranking_raw.strip():
             df_rank = parse_ranking_table(ranking_raw)
             if df_rank.empty:
-                st.error("Could not parse the U16 rankings table. "
-                         "Check that you selected from the header row (Rank/Player/Year of birth/...) downwards.")
+                st.error(
+                    "Could not parse the U16 rankings table.\n\n"
+                    "Tips:\n"
+                    "- Make sure you included the header labels (Rank / Player / Year of birth / ...).\n"
+                    "- Make sure each player's block (rank + lines under it) is included."
+                )
             else:
                 st.success("U16 rankings table parsed successfully.")
                 st.write("**Ranking columns detected:**", list(df_rank.columns))
