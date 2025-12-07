@@ -10,28 +10,33 @@ import re
 
 def parse_week_string(week_str: str):
     """
-    Parse strings like '49-2025' or '2025-49' into (year, week).
+    Parse LTA week strings like '49-2025' or '2025-49' into (year, week).
+
+    Supports both:
+    - week-year (e.g. '49-2025')
+    - year-week (e.g. '2025-49')
     Returns (year, week) or (None, None) if it can't parse.
     """
     if not isinstance(week_str, str):
-        return None, None
+        week_str = str(week_str)
 
     s = week_str.strip()
     if not s:
         return None, None
 
-    # match two numbers separated by non-digit
+    # Case 1: YEAR-WEEK  e.g. 2025-49
+    m = re.match(r"^\s*(\d{4})\D+(\d{1,2})\s*$", s)
+    if m:
+        year = int(m.group(1))
+        week = int(m.group(2))
+        if 1 <= week <= 53:
+            return year, week
+
+    # Case 2: WEEK-YEAR  e.g. 49-2025
     m = re.match(r"^\s*(\d{1,2})\D+(\d{4})\s*$", s)
     if m:
-        a = int(m.group(1))
-        b = int(m.group(2))
-        # Decide which is week vs year
-        if a > 100:  # e.g. 2025-49
-            year, week = a, b
-        elif b > 100:  # e.g. 49-2025
-            week, year = a, b
-        else:
-            return None, None
+        week = int(m.group(1))
+        year = int(m.group(2))
         if 1 <= week <= 53:
             return year, week
 
@@ -40,9 +45,20 @@ def parse_week_string(week_str: str):
 
 def week_to_date(year: int, week: int) -> dt.date:
     """
-    Convert ISO (year, week) to a date (Monday of that week).
+    Convert (year, week) to an approximate date (Monday of that week).
+
+    Tries ISO calendar first; if that fails (e.g. week 53 in a year
+    that only has 52 ISO weeks), it falls back to:
+    - Monday of ISO week 1
+    - plus (week-1) * 7 days
     """
-    return dt.date.fromisocalendar(year, week, 1)
+    try:
+        return dt.date.fromisocalendar(year, week, 1)
+    except ValueError:
+        # Fallback: approximate week start
+        jan4 = dt.date(year, 1, 4)  # always in ISO week 1
+        week1_monday = jan4 - dt.timedelta(days=jan4.isoweekday() - 1)
+        return week1_monday + dt.timedelta(weeks=week - 1)
 
 
 def normalize_columns_results(df: pd.DataFrame) -> pd.DataFrame:
@@ -314,12 +330,16 @@ def main():
         df_doubles = parse_pasted_results_table(doubles_raw)
 
         if df_singles.empty:
-            st.error("Could not find a header row with 'Week' in the Singles section. "
-                     "Try selecting from the header row downwards.")
+            st.error(
+                "Could not find a header row with 'Week' in the Singles section. "
+                "Try selecting from the header row downwards."
+            )
             return
         if df_doubles.empty:
-            st.error("Could not find a header row with 'Week' in the Doubles section. "
-                     "Try selecting from the header row downwards.")
+            st.error(
+                "Could not find a header row with 'Week' in the Doubles section. "
+                "Try selecting from the header row downwards."
+            )
             return
 
         st.success("Singles & Doubles tables parsed successfully.")
