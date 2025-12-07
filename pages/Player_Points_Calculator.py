@@ -45,6 +45,28 @@ def week_to_date(year: int, week: int) -> dt.date:
     return dt.date.fromisocalendar(year, week, 1)
 
 
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make LTA headers more standard:
+    - any column containing 'week' -> 'Week'
+    - any column containing 'point' -> 'Points'
+    - we keep others as-is (trimmed)
+    """
+    new_cols = []
+    for c in df.columns:
+        cl = str(c).strip()
+        cl_low = cl.lower()
+        if "week" in cl_low:
+            new_cols.append("Week")
+        elif "point" in cl_low:
+            new_cols.append("Points")
+        else:
+            new_cols.append(cl)
+    df = df.copy()
+    df.columns = new_cols
+    return df
+
+
 def parse_pasted_table(raw: str) -> pd.DataFrame:
     """
     Parse a pasted LTA-style table from the website into a DataFrame.
@@ -89,6 +111,7 @@ def parse_pasted_table(raw: str) -> pd.DataFrame:
         rows.append(parts)
 
     df = pd.DataFrame(rows, columns=cols)
+    df = normalize_columns(df)
     return df
 
 
@@ -96,6 +119,7 @@ def filter_valid_weeks(df: pd.DataFrame, target_date: dt.date) -> pd.DataFrame:
     """
     Keep only tournaments within the last 52 weeks (inclusive)
     relative to target_date, based on a 'Week' column.
+    If we can't find / parse weeks, we just return the df unchanged.
     """
     if "Week" not in df.columns:
         return df  # can't filter, just return as-is
@@ -121,6 +145,10 @@ def filter_valid_weeks(df: pd.DataFrame, target_date: dt.date) -> pd.DataFrame:
     df["WeekNum"] = weeks
     df["WeekStartDate"] = dates
 
+    if df["WeekStartDate"].isna().all():
+        # nothing parsed, don't filter
+        return df
+
     def is_valid(row):
         d = row["WeekStartDate"]
         if not isinstance(d, dt.date):
@@ -143,9 +171,12 @@ def compute_u16_style_points(df_singles: pd.DataFrame, df_doubles: pd.DataFrame)
     - Doubles count at 25%
     """
     def coerce_points(df):
+        # Find a "Points" column (normalized earlier)
         if "Points" not in df.columns:
             return df.assign(PointsNum=pd.NA)
-        pts = pd.to_numeric(df["Points"].astype(str).str.extract(r"(\d+)")[0], errors="coerce")
+        # remove all non-digits to handle values like '1,500*'
+        cleaned = df["Points"].astype(str).str.replace(r"[^\d]", "", regex=True)
+        pts = pd.to_numeric(cleaned, errors="coerce")
         df = df.copy()
         df["PointsNum"] = pts
         df = df.dropna(subset=["PointsNum"])
@@ -267,6 +298,10 @@ def main():
 
         st.success("Tables parsed successfully.")
 
+        # Show parsed headers so you can see what it understood
+        st.write("**Singles columns detected:**", list(df_singles.columns))
+        st.write("**Doubles columns detected:**", list(df_doubles.columns))
+
         # Filter by 52-week validity
         df_singles_valid = filter_valid_weeks(df_singles, target_date)
         df_doubles_valid = filter_valid_weeks(df_doubles, target_date)
@@ -277,7 +312,7 @@ def main():
         st.markdown("#### Valid Doubles Results (within last 52 weeks)")
         st.dataframe(df_doubles_valid, use_container_width=True)
 
-        # Decide scoring rule based on age (for now, always use U16+ logic)
+        # Age info (for future U14/U16 logic)
         age_at_target = iso_year - int(birth_year)
         st.info(f"Age at target year: approx **{age_at_target}**.")
 
